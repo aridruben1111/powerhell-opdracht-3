@@ -4,11 +4,11 @@
 .DESCRIPTION
     Dit bestand bevat alle functies voor logging, het beheren van de
     automatische herstart-cyclus (AutoLogon, Scheduled Tasks),
-    omgevingsvariabelen, en het afhandelen van de herstart.
+    omgevingsvariabelen, het afhandelen van de herstart en het instellen van permissies.
 .NOTES
-    Auteur: Ruben
-    Versie: 6.0
-    Datum: 03-10-2025
+    Auteur: Ruben & Gemini
+    Versie: 8.0 (Printer-installatie en Home Folders toegevoegd)
+    Datum: 06-10-2025
 #>
 
 # =================================================================================
@@ -101,11 +101,93 @@ function Remove-Env { param([string]$Name,[string]$Target='Machine'); [Environme
 
 #endregion
 
-#region Functies voor Logging en Feedback
+#region Functies voor Logging, Permissies en Printer
 
 function Write-Status { param([string]$Message); Write-Host "[*] $Message" -ForegroundColor Cyan }
 function Write-Success { param([string]$Message); Write-Host "[+] $Message" -ForegroundColor Green }
 function Write-Warning-Msg { param([string]$Message); Write-Host "[!] $Message" -ForegroundColor Yellow }
 function Write-Error-Msg { param([string]$Message); Write-Host "[-] $Message" -ForegroundColor Red }
+
+function Set-NTFSPermissions {
+    param([string]$FolderPath, [array]$Permissions, [string]$NetBiosDomain)
+    $acl = Get-Acl $FolderPath
+    $acl.SetAccessRuleProtection($true, $false) # Disable inheritance
+    foreach ($perm in $Permissions) {
+        $accountName = if ($perm.Account -ne 'SYSTEM') { "$($NetBiosDomain)\$($perm.Account)" } else { 'SYSTEM' }
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($accountName, $perm.Rights, "ContainerInherit, ObjectInherit", "None", $perm.Type)
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl -Path $FolderPath -AclObject $acl
+}
+
+function Install-PrinterServices {
+    param(
+        [string]$PrinterIP = "172.16.2.110",
+        [string]$PrinterName = "HP Laserjet 300u",
+        [string]$ShareName = "HP_Laserjet_300u",
+        [string]$DriverName = "HP Universal Printing PCL 6"
+    )
+
+    Write-Status "Start installatie van printer '$PrinterName'..."
+    if (Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue) {
+        Write-Warning-Msg "Printer '$PrinterName' is al geïnstalleerd. Stap wordt overgeslagen."
+        return
+    }
+
+    try {
+        # Stap 1: Download en pak de driver uit
+        if (-not (Get-PrinterDriver -Name $DriverName -ErrorAction SilentlyContinue)) {
+            Write-Status "Printer driver '$DriverName' niet gevonden. Start download..."
+            $driverUrl = "https://ftp.hp.com/pub/softlib/software13/printers/UPD/upd-pcl6-x64-7.9.0.26347.zip"
+            $zipPath = Join-Path $env:TEMP "HP_UPD_PCL6.zip"
+            $extractPath = Join-Path $env:TEMP "HP_UPD_PCL6"
+
+            Invoke-WebRequest -Uri $driverUrl -OutFile $zipPath
+            Write-Success "Driver gedownload."
+
+            Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+            Write-Success "Driver uitgepakt naar $extractPath."
+
+            # Stap 2: Vind de .inf en installeer de driver
+            $infFile = Get-ChildItem -Path $extractPath -Filter "*.inf" -Recurse | Select-Object -First 1
+            if ($infFile) {
+                # Haal de exacte drivernaam op uit het .inf bestand. Dit is robuuster.
+                $driverInfo = Get-WindowsDriver -Path $infFile.FullName
+                $actualDriverName = $driverInfo.Driver.Split(' ')[0] # Neem de eerste naam uit de lijst
+                if (-not $actualDriverName) {
+                    throw "Kon geen geldige drivernaam vinden in $($infFile.FullName)"
+                }
+
+                Write-Status "Driver .inf gevonden: $($infFile.FullName). Exacte naam: '$actualDriverName'. Installatie wordt gestart..."
+                pnputil.exe /add-driver $infFile.FullName /install
+                
+                # De Add-PrinterDriver is niet meer nodig, pnputil /install doet dit al.
+                # We gebruiken de dynamisch gevonden naam voor de rest van het proces.
+                $DriverName = $actualDriverName
+                Write-Success "Printer driver '$DriverName' succesvol geïnstalleerd via PnP."
+            } else {
+                throw "Kon het .inf-bestand niet vinden in de uitgepakte drivermap."
+            }
+        } else {
+            Write-Warning-Msg "Printer driver '$DriverName' is al aanwezig."
+        }
+
+        # Stap 3: Maak de printerpoort aan
+        $portName = "IP_$($PrinterIP)"
+        if (-not (Get-PrinterPort -Name $portName -ErrorAction SilentlyContinue)) {
+            Add-PrinterPort -Name $portName -PrinterHostAddress $PrinterIP
+            Write-Success "Printerpoort '$portName' aangemaakt."
+        } else {
+            Write-Warning-Msg "Printerpoort '$portName' bestaat al."
+        }
+
+        # Stap 4: Installeer en deel de printer
+        Add-Printer -Name $PrinterName -DriverName $DriverName -PortName $portName -Shared -ShareName $ShareName
+        Write-Success "Printer '$PrinterName' is succesvol geïnstalleerd en gedeeld als '$ShareName'."
+
+    } catch {
+        Write-Error-Msg "Fout bij installeren van de printer: $($_.Exception.Message)"
+    }
+}
 
 #endregion

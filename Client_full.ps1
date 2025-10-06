@@ -5,14 +5,15 @@
 
 .DESCRIPTION
     Dit script stelt de tijdzone, computernaam, netwerkinstellingen, en de client 
-    firewall in. Het forceert ook de tijdsynchronisatie met de DC, wat cruciaal is.
+    firewall in. Het maakt ook een extra lokaal admin-account aan en schakelt Windows Update uit.
+    Het forceert ook de tijdsynchronisatie met de DC, wat cruciaal is.
     Het voegt de computer alleen toe aan het domein als deze nog geen
     lid is en herstart alleen als er wijzigingen zijn die dit vereisen.
 
 .NOTES
     Auteur: Gemini (Google AI)
-    Versie: 4.5 (Definitieve Fix met Time Sync)
-    Datum: 29-09-2025
+    Versie: 5.0 (Aangepast aan Aventus Opdracht 5)
+    Datum: 05-10-2025
 #>
 
 #region Hulpfuncties
@@ -111,8 +112,21 @@ if ($env:COMPUTERNAME -ne $HostName) {
     Write-Warning-Msg "Computernaam is al correct ingesteld. Stap wordt overgeslagen."
 }
 
-# --- STAP 5: WINDOWS UPDATE UITSCHAKELEN ---
-Write-Host "`n--- STAP 5: WINDOWS UPDATE UITSCHAKELEN ---" -ForegroundColor Green
+# --- STAP 5: LOKAAL ADMIN ACCOUNT AANMAKEN ---
+Write-Host "`n--- STAP 5: LOKAAL ADMIN ACCOUNT AANMAKEN ---" -ForegroundColor Green
+$localAdminUser = "LocalAdmin"
+if (-not (Get-LocalUser -Name $localAdminUser -ErrorAction SilentlyContinue)) {
+    Write-Status "Lokaal account '$localAdminUser' wordt aangemaakt..."
+    $password = ConvertTo-SecureString "Welkom01!" -AsPlainText -Force
+    $newUser = New-LocalUser -Name $localAdminUser -Password $password -FullName "Lokale Administrator" -Description "Extra lokaal admin account."
+    Add-LocalGroupMember -Group "Administrators" -Member $newUser.Name
+    Write-Success "Lokaal account '$localAdminUser' succesvol aangemaakt en toegevoegd aan de Administrators groep."
+} else {
+    Write-Warning-Msg "Lokaal account '$localAdminUser' bestaat al. Stap wordt overgeslagen."
+}
+
+# --- STAP 6: WINDOWS UPDATE UITSCHAKELEN ---
+Write-Host "`n--- STAP 6: WINDOWS UPDATE UITSCHAKELEN ---" -ForegroundColor Green
 $updateService = Get-Service -Name wuauserv
 if ($updateService.Status -ne 'Stopped' -or $updateService.StartType -ne 'Disabled') {
     Write-Host "De Windows Update service wordt gestopt en permanent uitgeschakeld."
@@ -123,9 +137,9 @@ if ($updateService.Status -ne 'Stopped' -or $updateService.StartType -ne 'Disabl
     Write-Warning-Msg "Windows Update service is al uitgeschakeld. Stap wordt overgeslagen."
 }
 
-# --- STAP 6: TOEVOEGEN AAN DOMEIN ---
+# --- STAP 7: TOEVOEGEN AAN DOMEIN ---
 Clear-Host
-Write-Host "--- STAP 6: TOEVOEGEN AAN DOMEIN ---" -ForegroundColor Green
+Write-Host "--- STAP 7: TOEVOEGEN AAN DOMEIN ---" -ForegroundColor Green
 $computerInfo = Get-ComputerInfo
 if ($computerInfo.Domain -ne $DomainName) {
     Write-Host "Computer is nog geen lid van het domein. Voorbereidingen worden getroffen..."
@@ -190,4 +204,3 @@ if ($rebootRequired) {
 }
 Write-Host "------------------------------------------------------------" -ForegroundColor Green
 #endregion
-

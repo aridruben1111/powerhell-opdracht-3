@@ -7,8 +7,8 @@
     ook de logica om de status te herstellen wanneer het script hervat na een herstart.
 .NOTES
     Auteur: Ruben
-    Versie: 6.0
-    Datum: 03-10-2025
+    Versie: 7.0 (Aangepast aan Aventus Opdracht 4)
+    Datum: 05-10-2025
 #>
 
 # =================================================================================
