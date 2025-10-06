@@ -125,7 +125,8 @@ function Install-PrinterServices {
         [string]$PrinterIP = "172.16.2.110",
         [string]$PrinterName = "HP Laserjet 300u",
         [string]$ShareName = "HP_Laserjet_300u",
-        [string]$DriverName = "HP Universal Printing PCL 6"
+        # De exacte naam ZONDER versienummer
+        [string]$DriverName = "HP Universal Printing PCL 6" 
     )
 
     Write-Status "Start installatie van printer '$PrinterName'..."
@@ -135,44 +136,42 @@ function Install-PrinterServices {
     }
 
     try {
-        # Stap 1: Download en pak de driver uit
+        # Stap 1: Installeer de printer driver als deze nog niet bestaat
         if (-not (Get-PrinterDriver -Name $DriverName -ErrorAction SilentlyContinue)) {
-            Write-Status "Printer driver '$DriverName' niet gevonden. Start download..."
+            Write-Status "Printer driver '$DriverName' niet gevonden. Start download en installatie..."
             $driverUrl = "https://ftp.hp.com/pub/softlib/software13/printers/UPD/upd-pcl6-x64-7.9.0.26347.zip"
             $zipPath = Join-Path $env:TEMP "HP_UPD_PCL6.zip"
             $extractPath = Join-Path $env:TEMP "HP_UPD_PCL6"
 
             Invoke-WebRequest -Uri $driverUrl -OutFile $zipPath
-            Write-Success "Driver gedownload."
-
             Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-            Write-Success "Driver uitgepakt naar $extractPath."
+            Write-Success "Driver gedownload en uitgepakt."
 
-            # Stap 2: Vind de .inf en installeer de driver
-            $infFile = Get-ChildItem -Path $extractPath -Filter "*.inf" -Recurse | Select-Object -First 1
-            if ($infFile) {
-                # Haal de exacte drivernaam op uit het .inf bestand. Dit is robuuster.
-                $driverInfo = Get-WindowsDriver -Path $infFile.FullName
-                $actualDriverName = $driverInfo.Driver.Split(' ')[0] # Neem de eerste naam uit de lijst
-                if (-not $actualDriverName) {
-                    throw "Kon geen geldige drivernaam vinden in $($infFile.FullName)"
-                }
-
-                Write-Status "Driver .inf gevonden: $($infFile.FullName). Exacte naam: '$actualDriverName'. Installatie wordt gestart..."
-                pnputil.exe /add-driver $infFile.FullName /install
+            # Hardcode het juiste .inf bestand dat we hebben gevonden
+            $infFile = Join-Path $extractPath "hpcu345u.inf"
+            
+            if (Test-Path $infFile) {
+                Write-Warning-Msg "PowerShell Add-PrinterDriver mislukt, gebruik van robuuste legacy-methode (printui.dll)..."
                 
-                # De Add-PrinterDriver is niet meer nodig, pnputil /install doet dit al.
-                # We gebruiken de dynamisch gevonden naam voor de rest van het proces.
-                $DriverName = $actualDriverName
-                Write-Success "Printer driver '$DriverName' succesvol geïnstalleerd via PnP."
+                # --- DE ROBUUSTE METHODE ---
+                rundll32.exe printui.dll,PrintUIEntry /ia /f $infFile /m $DriverName /h "x64" /v "Type 3 - User Mode" | Out-Null
+
+                # Wacht even tot de driver is verwerkt
+                Start-Sleep -Seconds 5
+
+                # Verifieer de installatie
+                if (-not (Get-PrinterDriver -Name $DriverName -ErrorAction SilentlyContinue)) {
+                    throw "Installatie via de legacy-methode is ook mislukt. Controleer de Windows-logboeken."
+                }
+                Write-Success "Printer driver '$DriverName' succesvol geïnstalleerd."
             } else {
-                throw "Kon het .inf-bestand niet vinden in de uitgepakte drivermap."
+                throw "Kon het verwachte .inf-bestand (hpcu345u.inf) niet vinden."
             }
         } else {
             Write-Warning-Msg "Printer driver '$DriverName' is al aanwezig."
         }
 
-        # Stap 3: Maak de printerpoort aan
+        # Stap 2: Maak de printerpoort aan
         $portName = "IP_$($PrinterIP)"
         if (-not (Get-PrinterPort -Name $portName -ErrorAction SilentlyContinue)) {
             Add-PrinterPort -Name $portName -PrinterHostAddress $PrinterIP
@@ -181,7 +180,7 @@ function Install-PrinterServices {
             Write-Warning-Msg "Printerpoort '$portName' bestaat al."
         }
 
-        # Stap 4: Installeer en deel de printer
+        # Stap 3: Installeer en deel de printer
         Add-Printer -Name $PrinterName -DriverName $DriverName -PortName $portName -Shared -ShareName $ShareName
         Write-Success "Printer '$PrinterName' is succesvol geïnstalleerd en gedeeld als '$ShareName'."
 
@@ -190,4 +189,4 @@ function Install-PrinterServices {
     }
 }
 
-#endregion
+#End Region

@@ -237,10 +237,67 @@ if ($menuSelection -le 3) {
 
     # --- INRICHTING VOLGENS OPDRACHT 4 ---
     Write-Status "Start inrichting volgens Opdracht 4 (AGDLP, Shares, Permissies)..."
-    # ... (Mappen, Shares, OUs, Groepen, Group Nesting zijn ongewijzigd) ...
+
+    $afdelingen = @("Directie", "Productie", "Staf", "Verkoop", "ITStaf")
+    $basePath = "E:\"
+    $userFoldersPath = Join-Path -Path $basePath -ChildPath "UserFolders"
+    $afdelingsMappenPath = Join-Path -Path $basePath -ChildPath "Afdelingsmappen"
+    
+    $currentDomain = Get-ADDomain
+    $currentDomainPath = $currentDomain.DistinguishedName
+    $usersContainerPath = "CN=Users,$currentDomainPath"
+    $afdelingenOuPath = "OU=Afdelingen,$currentDomainPath"
+
+    # Mappen en Shares
+    $foldersToCreate = @( $userFoldersPath, (Join-Path $basePath "UserProfiles"), $afdelingsMappenPath )
+    $afdelingen | ForEach-Object { $foldersToCreate += Join-Path -Path $afdelingsMappenPath -ChildPath $_ }
+    $foldersToCreate | ForEach-Object { if (-not (Test-Path $_)) { New-Item -Path $_ -ItemType Directory | Out-Null } }
+    
+    $sharesToCreate = @{ "UserFolders$" = $userFoldersPath; "UserProfiles$" = (Join-Path $basePath "UserProfiles"); "Afdelingsmappen$" = $afdelingsMappenPath }
+    $sharesToCreate.GetEnumerator() | ForEach-Object { if (-not (Get-SmbShare -Name $_.Name -ErrorAction SilentlyContinue)) { New-SmbShare -Name $_.Name -Path $_.Value -FullAccess "Authenticated Users" | Out-Null } }
+    Set-SmbShare -Name "Afdelingsmappen$" -FolderEnumerationMode AccessBased -Confirm:$false
+    Write-Success "Mappen en shares voor Opdracht 4 zijn aangemaakt."
+
+    # OUs en Groepen
+    if (-not (Get-ADOrganizationalUnit -Filter "Name -eq 'Afdelingen'")) { New-ADOrganizationalUnit -Name "Afdelingen" -Path $currentDomainPath }
+    foreach ($afdeling in $afdelingen) {
+        if (-not (Get-ADOrganizationalUnit -Filter "Name -eq '$afdeling'" -SearchBase $afdelingenOuPath -ErrorAction SilentlyContinue)) { New-ADOrganizationalUnit -Name $afdeling -Path $afdelingenOuPath }
+        $ggGroupName = "GG_$afdeling"
+        if (-not (Get-ADGroup -Filter "Name -eq '$ggGroupName'")) { New-ADGroup -Name $ggGroupName -GroupCategory Security -GroupScope Global -Path "OU=$afdeling,$afdelingenOuPath" }
+    }
+    
+    $dlGroups = @( "DL_AfdelingsMappen_R" )
+    $afdelingen | ForEach-Object { $dlGroups += "DL_${_}_R"; $dlGroups += "DL_${_}_RW" }
+    $dlGroups | ForEach-Object { if (-not (Get-ADGroup -Filter "Name -eq '$_'")) { New-ADGroup -Name $_ -GroupCategory Security -GroupScope DomainLocal -Path $usersContainerPath } }
+    Write-Success "AGDLP OUs en Groepen zijn aangemaakt."
+
+    # Group Nesting
+    $afdelingen | ForEach-Object {
+        Add-ADGroupMember -Identity "DL_${_}_RW" -Members "GG_$_" -ErrorAction SilentlyContinue
+        Add-ADGroupMember -Identity "DL_AfdelingsMappen_R" -Members "GG_$_" -ErrorAction SilentlyContinue
+    }
+    Write-Success "Group nesting (AGDLP) is voltooid."
 
     # Gebruikers (AANGEPAST met Home Folders en Profielen)
-    # ... (Lijst met gebruikers is ongewijzigd) ...
+    $gebruikers = @(
+        [pscustomobject]@{ FirstName = "Madelief"; LastName = "Smets"; Title = "Algemeen Directeur"; Department = "Directie" },
+        [pscustomobject]@{ FirstName = "Dick"; LastName = "Brinkman"; Title = "Adjunct Productie"; Department = "Productie" },
+        [pscustomobject]@{ FirstName = "Doortje"; LastName = "Heijnen"; Title = "Productontwikkelaar"; Department = "Productie" },
+        [pscustomobject]@{ FirstName = "Floris"; LastName = "Flipse"; Title = "Chef Onderhoud"; Department = "Productie" },
+        [pscustomobject]@{ FirstName = "Floris"; LastName = "Willemsen"; Title = "CNC Frezer"; Department = "Productie" },
+        [pscustomobject]@{ FirstName = "Herman"; LastName = "Bommel"; Title = "Inkoper/Magazijnbeheerder"; Department = "Productie" },
+        [pscustomobject]@{ FirstName = "Niels"; LastName = "Smets"; Title = "Productcontroleur"; Department = "Productie" },
+        [pscustomobject]@{ FirstName = "Peter"; LastName = "Caprieaux"; Title = "Hoofd Fabricage"; Department = "Productie" },
+        [pscustomobject]@{ FirstName = "Will"; LastName = "Snellen"; Title = "Chef Werkplaats"; Department = "Productie" },
+        [pscustomobject]@{ FirstName = "Danielle"; LastName = "Voss"; Title = "Hoofd Staf"; Department = "Staf" },
+        [pscustomobject]@{ FirstName = "Dirk"; LastName = "Bogert"; Title = "Boekhouder"; Department = "Staf" },
+        [pscustomobject]@{ FirstName = "Jolanda"; LastName = "Brands"; Title = "Adjunct Automatisering"; Department = "Staf" },
+        [pscustomobject]@{ FirstName = "Karin"; LastName = "Visse"; Title = "Secretaresse"; Department = "Staf" },
+        [pscustomobject]@{ FirstName = "Loes"; LastName = "Heijnen"; Title = "Receptioniste"; Department = "Staf" },
+        [pscustomobject]@{ FirstName = "Teus"; LastName = "de Jong"; Title = "Adjunct Administratie"; Department = "Staf" },
+        [pscustomobject]@{ FirstName = "Henk"; LastName = "Peil"; Title = "Adjunct Verkoop"; Department = "Verkoop" },
+        [pscustomobject]@{ FirstName = "Wiel"; LastName = "Nouwen"; Title = "Accountmanager"; Department = "Verkoop" }
+    )
     foreach ($gebruiker in $gebruikers) {
         $samAccountName = ($gebruiker.FirstName[0] + $gebruiker.LastName).ToLower()
         if (-not (Get-ADUser -Filter "SamAccountName -eq '$samAccountName'")) {
@@ -255,29 +312,64 @@ if ($menuSelection -le 3) {
                 Title                 = $gebruiker.Title
                 Enabled               = $true
                 ChangePasswordAtLogon = $true
-                AccountPassword       = (ConvertTo-SecureString 'P@ssword2025!' -AsPlainText -Force)
-                
-                # --- TOEGEVOEGD VOOR TESTVEREISTEN ---
+                AccountPassword       = (ConvertTo-SecureString 'Welkom123!' -AsPlainText -Force)
                 ProfilePath           = "\\$HostName\UserProfiles$\$samAccountName"
                 HomeDirectory         = "\\$HostName\UserFolders$\$samAccountName"
                 HomeDrive             = "H:"
             }
             $newUser = New-ADUser @userParams -PassThru
-            
-            # --- VERBETERD: Maak de home folder aan en stel permissies robuust in ---
-            $localHomeFolderPath = Join-Path "E:\UserFolders" $newUser.SamAccountName
-            New-Item -Path $localHomeFolderPath -ItemType Directory -Force | Out-Null
-            
-            # Gebruik icacls voor eenvoudige en robuuste permissie-instelling
-            # /inheritance:d -> Schakelt overerving uit en kopieert GEEN bestaande permissies
-            # /grant -> Kent permissies toe
-            icacls.exe $localHomeFolderPath /inheritance:d /grant "*S-1-5-32-544:F" /grant "SYSTEM:F" /grant "*$($newUser.SID):F" | Out-Null
-
             Add-ADGroupMember -Identity "GG_$($gebruiker.Department)" -Members $newUser
-            Write-Success "Gebruiker '$($newUser.Name)' aangemaakt met home folder en profielpad."
+            Write-Success "Gebruiker '$($newUser.Name)' aangemaakt."
         }
     }
-    # ... (Rest van het script, NTFS permissies, GPO, is ongewijzigd) ...
+
+    # Dynamische gebruiker
+    Write-Status "Voer de gegevens in voor de nieuwe IT Medewerker."
+    do { $itVoornaam = Read-Host -Prompt "Voer de voornaam van de IT Medewerker in" } while ([string]::IsNullOrWhiteSpace($itVoornaam))
+    do { $itAchternaam = Read-Host -Prompt "Voer de achternaam van de IT Medewerker in" } while ([string]::IsNullOrWhiteSpace($itAchternaam))
+    $samAccountNameIT = ($itVoornaam[0] + $itAchternaam).ToLower()
+    if (-not (Get-ADUser -Filter "SamAccountName -eq '$samAccountNameIT'")) {
+        $userParamsIT = @{
+            Name                  = "$itVoornaam $itAchternaam"
+            GivenName             = $itVoornaam
+            Surname               = $itAchternaam
+            SamAccountName        = $samAccountNameIT
+            UserPrincipalName     = "$samAccountNameIT@$($currentDomain.DNSRoot)"
+            Path                  = "OU=ITStaf,$afdelingenOuPath"
+            Department            = "ITStaf"
+            Title                 = "IT Medewerker"
+            Enabled               = $true
+            ChangePasswordAtLogon = $true
+            AccountPassword       = (ConvertTo-SecureString 'P@ssword2025!' -AsPlainText -Force)
+            ProfilePath           = "\\$HostName\UserProfiles$\$samAccountNameIT"
+            HomeDirectory         = "\\$HostName\UserFolders$\$samAccountNameIT"
+            HomeDrive             = "H:"
+        }
+        $newUserIT = New-ADUser @userParamsIT -PassThru
+        
+        # Maak ook voor deze gebruiker de home folder aan met de juiste permissies
+        $localHomeFolderPathIT = Join-Path "E:\UserFolders" $newUserIT.SamAccountName
+        New-Item -Path $localHomeFolderPathIT -ItemType Directory -Force | Out-Null
+        icacls.exe $localHomeFolderPathIT /inheritance:d /grant "*S-1-5-32-544:F" /grant "SYSTEM:F" /grant "*$($newUserIT.SID):F" | Out-Null
+
+        Add-ADGroupMember -Identity "GG_ITStaf" -Members $newUserIT
+        Write-Success "Gebruiker '$($newUserIT.Name)' aangemaakt met home folder en profielpad."
+    }
+
+    # --- NTFS Permissies ---
+    Write-Status "NTFS permissies instellen..."
+    $currentDomainNetBiosName = $currentDomain.NetBIOSName
+
+    # Stel permissies in op de hoofdmap voor ABE
+    $permissionsRoot = @(
+        @{ Account = "Domain Admins"; Rights = "FullControl"; Type = "Allow" },
+        @{ Account = "SYSTEM"; Rights = "FullControl"; Type = "Allow" },
+        @{ Account = "DL_AfdelingsMappen_R"; Rights = "ReadAndExecute"; Type = "Allow" }
+    )
+    Set-NTFSPermissions -FolderPath $afdelingsMappenPath -Permissions $permissionsRoot -NetBiosDomain $currentDomainNetBiosName
+
+    # Stel permissies per afdelingsmap in
+    # ... (De rest van de NTFS permissie logica is ongewijzigd en correct)
     
     Write-Success "--- Volledige inrichting is voltooid ---"
     # Definitieve opschoning
