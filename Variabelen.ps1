@@ -6,7 +6,7 @@
     vraagt de gebruiker om dynamische invoer (studentnummer, wachtwoord). Het bevat
     ook de logica om de status te herstellen wanneer het script hervat na een herstart.
 .NOTES
-    Auteur: Ruben
+    Auteur: Ruben & Gemini
     Versie: 7.0 (Aangepast aan Aventus Opdracht 4)
     Datum: 05-10-2025
 #>
@@ -50,6 +50,9 @@ if ($resumingStage) {
     Set-Env 'AdminPasswordPlainText' $AdminPasswordPlainText
 }
 
+#benodigde rollen
+
+ $roles = @("AD-Domain-Services", "DHCP", "DNS", "File-Services", "Print-Services", "Routing")
 #endregion
 
 #region Statische Variabelen
@@ -69,6 +72,11 @@ $IPLAN        = "172.16.2.10"
 $DNS1LAN      = "172.16.2.10"
 $SubnetMask   = "255.255.255.0"
 $PrefixLength = 24
+
+$IPWAN         = "192.168.2.3"
+$PrefixLengthWAN = 24
+$GatewayWAN = "192.168.2.2" 
+$DNS1WAN = "1.1.1.1" 
 
 # Systeem Configuratie
 $TimeZone = "W. Europe Standard Time"

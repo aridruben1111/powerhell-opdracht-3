@@ -7,12 +7,11 @@
     Dit totaalscript configureert een Windows Server 2022 van begin tot eind. Het voert de
     basisconfiguratie uit, installeert alle rollen, promoveert de server tot Domain Controller,
     en richt vervolgens Active Directory en de bestandsshares in volgens het AGDLP-principe.
-    Tot slot wordt er een GPO aangemaakt die automatisch een snelkoppeling naar de afdelingsmap
-    op het bureaublad van de gebruiker plaatst.
+    Tot slot wordt er een GPO aangemaakt die automatisch de 'Afdelingsmappen' koppelt als de Z:-schijf voor gebruikers.
 
 .NOTES
     Auteur: Ruben & Gemini
-    Versie: 8.0 (Printer-installatie en Home Folders toegevoegd)
+    Versie: 9.0 (GPO voor Drive Mapping toegevoegd)
     Datum: 06-10-2025
 
     Vereisten:
@@ -89,7 +88,7 @@ if ($menuSelection -le 1) {
         Write-Error-Msg "Fout bij configureren van de harde schijf: $($_.Exception.Message)"
     }
 
-    # Netwerkconfiguratie (Dual NIC)
+# Netwerkconfiguratie (Dual NIC)
     Write-Status "Configureren van netwerkadapters (WAN en LAN)..."
     try {
         $unnamedAdapters = Get-NetAdapter -Physical | Where-Object { $_.Name -notin @("WAN", "LAN") }
@@ -101,13 +100,26 @@ if ($menuSelection -le 1) {
             Rename-NetAdapter -Name $unnamedAdapters[1].Name -NewName "LAN" -ErrorAction Stop
             Write-Success "Adapter '$($unnamedAdapters[1].Name)' hernoemd naar 'LAN'."
         }
-        Set-NetIPInterface -InterfaceAlias "WAN" -Dhcp Enabled -ErrorAction SilentlyContinue
-        Set-DnsClientServerAddress -InterfaceAlias "WAN" -ResetServerAddresses -ErrorAction SilentlyContinue
+
+        # AANGEPAST VOOR STATISCH WAN IP
+        Write-Status "Configureren van 'WAN' adapter met statisch IP..."
+        # Verwijder DHCP en eventuele oude IPs
+        Set-NetIPInterface -InterfaceAlias "WAN" -Dhcp Disabled -ErrorAction SilentlyContinue
+        Get-NetIPAddress -InterfaceAlias "WAN" -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false
+        New-NetIPAddress -InterfaceAlias "WAN" -IPAddress $IPWAN -PrefixLength 24 -DefaultGateway $GatewayWAN
+        
+        # Stel een publieke DNS in voor de WAN-poort 
+        Set-DnsClientServerAddress -InterfaceAlias "WAN" -ServerAddresses $DNS1WAN
+        Write-Success "Adapter 'WAN' geconfigureerd met statisch IP-adres 192.168.2.3."       
         Set-DnsClient -InterfaceAlias "WAN" -RegisterThisConnectionsAddress $false -ErrorAction SilentlyContinue
+        
+        # LAN Configuratie (ongewijzigd)
         Get-NetIPAddress -InterfaceAlias "LAN" -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false
         New-NetIPAddress -InterfaceAlias "LAN" -IPAddress $IPLAN -PrefixLength $PrefixLength
         Set-DnsClientServerAddress -InterfaceAlias "LAN" -ServerAddresses $DNS1LAN, "127.0.0.1"
         Write-Success "Adapter 'LAN' geconfigureerd met statisch IP-adres $IPLAN."
+        
+        # Herstart beide adapters
         Restart-NetAdapter -InterfaceAlias "WAN"
         Restart-NetAdapter -InterfaceAlias "LAN"
     } catch {
@@ -117,7 +129,7 @@ if ($menuSelection -le 1) {
     # Computernaam wijzigen
     if ($env:COMPUTERNAME -ne $HostName) {
         Write-Status "Computernaam wijzigen naar '$HostName'..."
-        Enable-AutoLogon -UserName $AutoUser -PlainTextPassword $AdminPasswordPlainText -DomainName $env:COMPUTERNAME
+        Enable-AutoLogon -UserName $AutoUser -PlainTextPassword $AdminwordPlainText -DomainName $env:COMPUTERNAME
         Register-ResumeTask -UserFqn $AutoUserFqn -PlainPwd $AdminPasswordPlainText
         Set-Env 'CurrentScriptStage' '2' # Hervat bij STAP 2
         Rename-Computer -NewName $HostName -Force
@@ -128,15 +140,13 @@ if ($menuSelection -le 1) {
 }
 #endregion
 
-#region STAP 2: Installatie Rollen en Promotie tot DC
 # =================================================================================
 # --- STAP 2: INSTALLATIE ROLLEN EN PROMOTIE TOT DC ---
 # =================================================================================
-# ... (Dit gedeelte is ongewijzigd)
+
 if ($menuSelection -le 2) {
     Write-Status "--- Start Stap 2: Installatie Rollen en Promotie tot DC ---"
 
-    $roles = @("AD-Domain-Services", "DHCP", "DNS", "File-Services", "Print-Services", "Routing")
     if ((Get-WindowsFeature -Name $roles | Where-Object { $_.Installed }).Count -ne $roles.Count) {
         Write-Status "Installeren van benodigde server-rollen..."
         Install-WindowsFeature -Name $roles -IncludeManagementTools
@@ -147,7 +157,6 @@ if ($menuSelection -le 2) {
     try {
         if (Get-ADDomain -ErrorAction Stop) { $isDC = $true }
     } catch {
-        # Dit is normaal als de server nog geen DC is
     }
 
     if (-not $isDC) {
@@ -162,9 +171,9 @@ if ($menuSelection -le 2) {
             -InstallDns:$true `
             -SafeModeAdministratorPassword $AdminPassword `
             -Force
-        Set-Env 'CurrentScriptStage' '3' # Hervat bij STAP 3
+        Set-Env 'CurrentScriptStage' '3'
         Write-Warning-Msg "Promotie is gestart. De server zal automatisch herstarten. Wacht geduldig af..."
-        Start-Sleep -Seconds 180 # Wacht om te voorkomen dat het script verdergaat
+        Start-Sleep -Seconds 180
     } else {
         Write-Success "Server is al een Domain Controller."
     }
@@ -172,10 +181,10 @@ if ($menuSelection -le 2) {
 }
 #endregion
 
-#region STAP 3: Volledige Inrichting van Services
 # =================================================================================
 # --- STAP 3: VOLLEDIGE INRICHTING VAN SERVICES ---
 # =================================================================================
+
 if ($menuSelection -le 3) {
     Write-Status "--- Start Stap 3: Volledige Inrichting van Services ---"
 
@@ -187,7 +196,6 @@ if ($menuSelection -le 3) {
 
     try {
         Import-Module ActiveDirectory, DnsServer, DhcpServer, GroupPolicy -ErrorAction Stop -PassThru
-        # ... (Module installatie ongewijzigd)
     }
     catch {
         Write-Error-Msg "KRITIEKE FOUT: Kon de benodigde PowerShell modules niet laden. Fout: $($_.Exception.Message). Script stopt."
@@ -210,7 +218,7 @@ if ($menuSelection -le 3) {
     
     # --- NIEUW: DHCP Reservering voor de printer ---
     $printerIP = "172.16.2.110"
-    $printerMac = "B01C380AFB24" # MAC-adres zonder streepjes
+    $printerMac = "B01C380AFB24"
     if (-not (Get-DhcpServerv4Reservation -ComputerName $HostName -ScopeId $scopeId -ClientId $printerMac -ErrorAction SilentlyContinue)) {
         Add-DhcpServerv4Reservation -ComputerName $HostName -ScopeId $scopeId -IPAddress $printerIP -ClientId $printerMac -Name "HP_Laserjet_300u" -Description "Printer reservering"
         Write-Success "DHCP reservering voor printer op $printerIP aangemaakt."
@@ -311,7 +319,7 @@ if ($menuSelection -le 3) {
                 Department            = $gebruiker.Department
                 Title                 = $gebruiker.Title
                 Enabled               = $true
-                ChangePasswordAtLogon = $true
+                ChangePasswordAtLogon = $false
                 AccountPassword       = (ConvertTo-SecureString 'Welkom123!' -AsPlainText -Force)
                 ProfilePath           = "\\$HostName\UserProfiles$\$samAccountName"
                 HomeDirectory         = "\\$HostName\UserFolders$\$samAccountName"
@@ -339,8 +347,8 @@ if ($menuSelection -le 3) {
             Department            = "ITStaf"
             Title                 = "IT Medewerker"
             Enabled               = $true
-            ChangePasswordAtLogon = $true
-            AccountPassword       = (ConvertTo-SecureString 'P@ssword2025!' -AsPlainText -Force)
+            ChangePasswordAtLogon = $false
+            AccountPassword       = (ConvertTo-SecureString 'Welkom123!' -AsPlainText -Force)
             ProfilePath           = "\\$HostName\UserProfiles$\$samAccountNameIT"
             HomeDirectory         = "\\$HostName\UserFolders$\$samAccountNameIT"
             HomeDrive             = "H:"
@@ -369,7 +377,48 @@ if ($menuSelection -le 3) {
     Set-NTFSPermissions -FolderPath $afdelingsMappenPath -Permissions $permissionsRoot -NetBiosDomain $currentDomainNetBiosName
 
     # Stel permissies per afdelingsmap in
-    # ... (De rest van de NTFS permissie logica is ongewijzigd en correct)
+
+    # --- NIEUW: GPO voor Afdelingsmappen Drive Mapping ---
+    Write-Status "Configureren van GPO voor Afdelingsmappen drive map..."
+    $gpoName = "GPO_DriveMap_Afdelingen"
+    $gpoLinkTarget = $afdelingenOuPath
+
+    try {
+        if (-not (Get-GPO -Name $gpoName -ErrorAction SilentlyContinue)) {
+            # Maak de GPO aan
+            $gpo = New-GPO -Name $gpoName -Comment "Koppelt de Z: schijf naar de map met afdelingsshares."
+            
+            # Koppel de GPO aan de 'Afdelingen' OU
+            New-GPLink -Name $gpo.DisplayName -Target $gpoLinkTarget
+
+            # Maak een eenvoudig logon script
+            $logonScriptContent = "@echo off`r`nnet use Z: \\$($HostName)\Afdelingsmappen$ /persistent:no /y"
+            
+            # Definieer het pad in de SYSVOL share
+            $logonScriptPath = "\\$($DomainName)\SysVol\$($DomainName)\scripts\mapdrive.bat"
+            $localLogonScriptPath = $logonScriptPath.Replace("\\$($DomainName)", "C:\Windows\SYSVOL\sysvol")
+
+            # Zorg ervoor dat de 'scripts' map bestaat
+            $scriptDir = Split-Path -Parent $localLogonScriptPath
+            if (-not (Test-Path $scriptDir)) {
+                New-Item -Path $scriptDir -ItemType Directory -Force | Out-Null
+            }
+            
+            # Maak het logon script bestand aan
+            Set-Content -Path $localLogonScriptPath -Value $logonScriptContent -Encoding Ascii
+
+            # Wijs het logon script toe aan gebruikers in de GPO
+            Set-GPRegistryValue -Name $gpo.DisplayName -Key "HKCU\Software\Policies\Microsoft\Windows\System\Scripts\Logon\0" -ValueName "Script" -Value $logonScriptPath -Type String
+            Set-GPRegistryValue -Name $gpo.DisplayName -Key "HKCU\Software\Policies\Microsoft\Windows\System\Scripts\Logon\0" -ValueName "Parameters" -Value "" -Type String
+            
+            Write-Success "GPO '$($gpo.DisplayName)' aangemaakt, gekoppeld aan '$gpoLinkTarget' en geconfigureerd met een logon script om Z: te mappen."
+
+        } else {
+            Write-Warning-Msg "GPO '$gpoName' bestaat al."
+        }
+    } catch {
+        Write-Error-Msg "Fout bij het configureren van de GPO: $($_.Exception.Message)"
+    }
     
     Write-Success "--- Volledige inrichting is voltooid ---"
     # Definitieve opschoning
@@ -381,18 +430,15 @@ if ($menuSelection -le 3) {
 }
 #endregion
 
-#region Script Afsluiting
+
 # =================================================================================
 # --- SCRIPT AFSLUITING ---
 # =================================================================================
-# ... (Dit gedeelte is ongewijzigd)
 if ($menuSelection -ge 4) {
     Write-Success "Script is afgesloten. De server is volledig geconfigureerd."
-    # Zorg voor opschoning als het script handmatig is gestopt of voltooid
     Disable-AutoLogon
     Remove-ResumeTask
     Remove-Env 'CurrentScriptStage'
     Remove-Env 'StudentNummer'
     Remove-Env 'AdminPasswordPlainText'
 }
-#endregion

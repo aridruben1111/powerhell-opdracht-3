@@ -11,7 +11,7 @@
     lid is en herstart alleen als er wijzigingen zijn die dit vereisen.
 
 .NOTES
-    Auteur: Gemini (Google AI)
+    Auteur: Ruben & Gemini
     Versie: 5.0 (Aangepast aan Aventus Opdracht 5)
     Datum: 05-10-2025
 #>
